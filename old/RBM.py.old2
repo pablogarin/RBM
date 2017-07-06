@@ -1,0 +1,159 @@
+#!/usr/bin/python
+import numpy as np
+from scipy import optimize
+import sys
+import random
+'''
+RBM	: Restricted Boltzman Machine.
+Es un tipo de Red Neural Artificail (ANN) que desifra patrones por su cuenta sin supervision
+'''
+class RBM(object):
+	def __init__(self, visibleSize=2, hiddenSize=3, Lambda=0):
+		self.visibleLayerSize = visibleSize
+		self.hiddenLayerSize = hiddenSize
+		self.K = 0.000001*(13./8.)#*(1/hiddenSize*visibleSize)
+		weights = []
+		for i in xrange(hiddenSize):
+			row = []
+			for j in xrange(visibleSize):
+				value = random.uniform(0.4+self.K,0.5+self.K)
+				row.append(value)
+			weights.append(np.array(row, dtype=float))
+		     
+		self.Weights = np.array(weights, dtype=float)
+		#self.Weights = np.random.randn(self.hiddenLayerSize, self.visibleLayerSize)
+		C = []
+		for n in xrange(self.visibleLayerSize):
+			#C.append(0.1625*n+1)
+			C.append(random.uniform(0.2+self.K,0.25+self.K))
+		self.visibleBias = np.array(C, dtype=float)
+		#self.visibleBias = np.random.randn(self.visibleLayerSize, 1)
+		K = []
+		for n in xrange(self.hiddenLayerSize):
+			#K.append(0.1*n+1)
+			K.append(random.uniform(0.3+self.K,0.35+self.K))
+		self.hiddenBias = np.array(K, dtype=float)
+		#self.hiddenBias = np.random.randn(self.hiddenLayerSize, 1)
+		self.Lambda = Lambda
+
+	def forward(self, X):
+		self.z2 = np.dot(X, self.Weights)
+		yHat = self.sigmoid(self.z2)
+		return yHat
+
+	def sigmoid(self, z):
+		return 1/(1+np.exp(-z))	
+
+	def identity(self, z):
+		return z
+
+	def sigmoidPrime(self, z):
+		return np.exp(-z)/((1+np.exp(-z))**2)
+
+	def costFunction(self, X, y):
+		self.yHat = self.forward(X)
+		J = 0.5*np.sum((y-self.yHat)**2)/X.shape[0] + (self.Lambda/2)*(np.sum(self.Weights**2))
+		return J
+
+	def costFunctionPrime(self, X, y):
+		self.yHat = self.forward(X)
+		delta = np.multiply(-(y-self.yHat), self.sigmoidPrime(self.z2))
+		djdW = np.dot(self.yHat.T, delta) + self.Lambda*self.Weights
+		return djdW
+	
+	def getParams(self):
+		params = self.Weights.ravel()
+		return params
+
+	def setParams(self, params):
+		hb, vb, w = params
+		self.Weights = np.reshape(w, (self.hiddenLayerSize, self.visibleLayerSize))
+		self.hiddenBias = np.reshape(hb, (self.hiddenLayerSize, 1))
+		self.visibleBias = np.reshape(vb, (self.visibleLayerSize, 1))
+
+	def computeGradients(self, X, y):
+		djdW = self.costFunctionPrime(X,y)
+		return djdW.ravel()
+
+	def hiddenProbability(self, V):	
+		Z = np.dot(self.Weights, V)
+		return self.sigmoid(Z)
+
+	def visibleProbability(self, H):
+		Z = np.dot(H, self.Weights)
+		return self.sigmoid(Z)
+
+	def check(self, X):
+		v2 = X
+		for j in xrange(self.hiddenLayerSize):
+			for i in xrange(self.visibleLayerSize):
+				h1 = self.sigmoid( self.visibleBias[i] + X[i]*self.Weights[j][i] )
+				h1 = self.bernoulli(h1)
+				v2[i] = self.sigmoid( self.hiddenBias[j] + h1*self.Weights[j][i] )
+		return v2
+		#H = self.hiddenProbability(X)
+		#return self.visibleProbability(H)
+
+	def trainNetwork(self,V, dbh, batch_size=10):
+		c = 0
+		total = len(V)
+		for v in V:
+			c += 1
+			print "Elemento",c,"de",total
+			'''
+			#print "Weights",self.Weights.shape
+			print "v1",v.shape
+			h1 = self.sigmoid( self.hiddenBias + np.multiply(self.Weights,v) )
+			#print "h1",h1.shape
+			v2 = self.sigmoid( np.dot(self.Weights.T, h1) + self.visibleBias )
+			print "v2",v2.shape
+			#h2 = self.sigmoid( np.dot(self.Weights,v2) )
+			#print "h2",h2.shape
+			sys.exit()
+			#self.Weights = self.Weights - (h1-h2)
+			'''
+			trainingConstant = self.K*100.
+			#print trainingConstant
+			#sys.exit()
+			deltaWeight = np.zeros(self.Weights.shape)
+			deltaHBias = np.zeros(self.hiddenBias.shape)
+			deltaVBias = np.zeros(self.visibleBias.shape)
+			for i in xrange(self.visibleLayerSize):
+				for j in xrange(self.hiddenLayerSize):
+					h1 = self.sigmoid( self.visibleBias[i] + v[i]*self.Weights[j][i] )
+					h1 = float(self.bernoulli(h1))
+					v2 = self.sigmoid( self.hiddenBias[j] + h1*self.Weights[j][i] )
+					h2 = self.sigmoid( self.visibleBias[i] + v2*self.Weights[j][i] )
+					h2 = float(self.bernoulli(h2))
+					deltaWeight[j][i] = trainingConstant*(v[i]*h1-v2*h2)
+					deltaHBias[j] = trainingConstant*(h1-h2)
+					deltaVBias[i] = trainingConstant*(v[i]-v2)
+					#self.Weights[j][i] += trainingConstant*(v[i]*h1-v2*h2)
+					#self.hiddenBias[j] += trainingConstant*(h1-h2)
+					#self.visibleBias[i] += trainingConstant*(v[i]-v2)
+			self.Weights += deltaWeight
+			self.hiddenBias += deltaHBias
+			self.visibleBias += deltaVBias 
+			if c%10==0:
+				print "actualizando peso"
+				upd = dbh.query("UPDATE weight SET weight=?, hiddenBias=?, visibleBias=? WHERE layer='Layer One';",(self.getParams(), self.hiddenBias.ravel(), self.visibleBias.ravel(),))
+		print "actualizando peso"
+		upd = dbh.query("UPDATE weight SET weight=?, hiddenBias=?, visibleBias=? WHERE layer='Layer One';",(self.getParams(), self.hiddenBias.ravel(), self.visibleBias.ravel(),))
+		#upd = dbh.query("UPDATE weight SET weight=? WHERE layer='Layer One';",(self.getParams(),))
+
+	def energyFunction(self,V,H):
+		'''
+		E(H,V) = SUM(VisibleBiasVector * VisibleVector) - SUM(HiddenViasVector * HiddenVector) - SUM(VisibleVector*Weight*HiddenVector)
+		'''
+		return -np.sum(np.dot(V, (np.dot(H.T, self.Weights.T)))) -np.sum(np.dot(self.visibleBias.T, V)) - np.sum(np.dot(self.hiddenBias.T, H))
+
+
+	def partitionFunction(self, V, H):
+		'''
+		Z = SUM(e^-E(v,h))
+		'''
+		return (np.expm1(-self.energyFunction(V,H)))
+
+	def bernoulli(self,p):
+		b = np.random.rand(*p.shape) < p
+		return np.array(b, dtype=float)

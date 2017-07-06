@@ -1,0 +1,3 @@
+#!/bin/bash
+./main.py -w
+rsync -Pavze "ssh -p30022" /mnt/drive/python/neuralnetwork/RBM/images/*.png root@pablogarin.cl:/var/www/pablogarin.cl/html/

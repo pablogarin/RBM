@@ -1,0 +1,371 @@
+#!/usr/bin/python
+import os, sys, sqlite3, ast
+import math
+import numpy as np
+from RBM import RBM
+from Trainer import Trainer
+from SQLHelper import SQLHelper
+from mnist import *
+from PIL import Image, ImageFilter
+from random import randint
+
+from scipy.interpolate import interp1d
+VISUALIZE = False
+
+dbh = None
+
+'''
+TODO: 
+	los datos a analizar deben ser descompuestos en vectores del mismo tamano. 
+	Para esto vamos a decidir un tamano fijo y modificar los datos dependiendo de su origen:
+		- Audio: Muestreo a intervalos regulares, ej: transformar senal analoga en digital de 1000 de resolucion.
+		- Imagen: Cambiar el tamano de las imagenes por uno fijo, rellenando la diferencia con blanco.
+		- Texto: Generar un lexicon con palabras claves a buscar para determinar un bitmap de una frase a partir de las coincidencias. (ver NLTK).
+
+	En caso de las imagenes, se puede usar una "Convoluted ANN", donde la imagen se divide en varos pedazos y cada capa analiza una parte. 
+'''
+def sigmoid(z):
+	return 1 / ( 1 + np.exp(-z) )
+
+	
+def main(args):
+	dbh = SQLHelper("database.sqlite")
+	rbm = RBM(visibleSize=784, hiddenSize=500)
+	
+	cur = dbh.query("select * from weight where current=1;")
+	if len(cur)>0:
+		if cur[0]['weight'] is not None:
+			params = cur[0]['hiddenBias'] ,cur[0]['visibleBias'], cur[0]['weight']
+			rbm.setParams(params)
+
+	#images, labels = load_mnist('training', digits=[2])
+		
+	if len(sys.argv)>1:
+		for arg in sys.argv:
+			if arg=='-t':
+				for i in xrange(10):
+					testSet =  getTestSet(i)
+					if VISUALIZE:
+						n = X[0] > np.random.rand(*X[0].shape)
+						#sys.exit()
+						n = n.reshape(28,28)
+						strline = ""
+						for l in n:
+							for b in l:
+								if b:
+									strline += "*"
+								else:
+									strline += " "
+							strline += "\n"
+						print strline
+						sys.exit()
+					rbm.trainNetwork(testSet, dbh, 100)
+				return
+			if arg=='-w':
+				#sqlite reg 830
+				testSet =  getTestSet(randint(0,9))
+				#testSet =  getTestSet(5)
+				i = 0
+				for weight in rbm.Weights:
+					retval = rbm.sigmoid(weight.copy())
+					#retval = weight.copy()
+					saveImage((retval*255), "images/weight-"+str(i)+".png")
+					i += 1
+					#retval = retval*255
+					#m = interp1d([min(weight),max(weight)],[0,255])
+					#retval = m(weight)
+				retval = testSet[random.randint(0,len(testSet))].copy()
+				saveImage((retval*255), "images/original.png")
+				retval = rbm.check(retval)
+				retval = retval.reshape(rbm.visibleLayerSize)
+				#print retval.shape
+
+				saveImage((255*retval), "images/result.png")
+				#print retval
+				return
+			#retval = rbm.check(np.concatenate(testSet[0], axis=0))
+			#retval = retval*255
+			#saveImage(retval,'images/result.png')
+			#showASCIIImage(retval*255)
+			#retval = rbm.check(retval)
+			#m = interp1d([min(retval),max(retval)],[0,255])
+			#result = m(retval*255)
+			#result = (retval).reshape(28,28)
+			#print result
+			#sys.exit()
+			#for line in result:
+			#	print line*255
+			#retval = retval*255
+			#showASCIIImage(retval)
+	#showASCIIImage(np.concatenate( (testSet[0]*255 > 91), axis=0))
+	#retval = rbm.check(np.concatenate(testSet[0], axis=0))
+	#retval = np.reshape((retval*255), 28)
+	#m = interp1d([min(retval),max(retval)],[0,255])
+	#retval = m(retval)
+	#retval = retval*255
+	#print retval
+	#saveImage(retval*255,'images/result.png')
+	#showASCIIImage(retval)
+	sys.exit()
+	
+	X = None
+
+	dbh = SQLHelper("./loto.sqlite")
+	primeraFecha = None
+	query = dbh.query("SELECT MIN(DATE(fecha)),id FROM sorteo ORDER BY id;");
+	primeraFecha = query[0][0]
+	primeraId = query[0][1]
+
+	query = dbh.query("select count(1) from sorteo where lower(juego)='loto';")
+	iteraciones = query[0][0]
+	iteraciones -= (iteraciones-10)
+
+	if len(args)>1:
+		for arg in args:
+			if arg=='-t':
+				X = ()
+				y = ()
+
+				strQuery = "SELECT * FROM sorteo WHERE date(fecha)>=date('"+primeraFecha+"') AND id!='"+str(primeraId)+"' AND LOWER(juego)='loto' order by date(fecha),id limit "+str(iteraciones)+";"
+				res = dbh.query(strQuery)
+				XSubSet = []
+				for i in range(0,41):
+					XSubSet.append(0)
+				sn = 1
+				for sorteo in res:
+					print "Sorteo", sn,"cargado"
+					ySubSet = []
+					for i in range(0,41):
+						ySubSet.append(0)
+					subQuery = dbh.query("SELECT numero, COUNT(numero) FROM numero WHERE sorteo=? AND LOWER(juego)='loto'GROUP BY numero;",(sorteo['numero'],));
+					for numero in subQuery:
+						valor = numero[0]-1
+						cantidad = numero[1]
+						XSubSet[valor] += cantidad
+						ySubSet[valor] = 1
+					X = X + (XSubSet,)
+					y = y + (ySubSet,)
+					sn += 1
+
+				X = np.array(X, dtype=float)
+				y = np.array(y, dtype=float)
+				
+				#y = y/np.amax(y, axis=0)
+
+	dbh = SQLHelper("database.sqlite")
+	
+	''' 
+	- Modelo: Deep Belief System
+	- Estructura: [41,43],[43,43],[43,43],[43,41]
+	'''
+	#Input Layer
+	L1 = RBM(inputSize=41, hiddenSize=41, Lambda=0.001)
+	#Hidden Layer One
+	L2 = RBM(inputSize=43, hiddenSize=43, Lambda=0.001)
+	#Hidden Layer Two
+	L3 = RBM(inputSize=43, hiddenSize=43, Lambda=0.001)
+	#Output Layer
+	L4 = RBM(inputSize=43, hiddenSize=41, Lambda=0.001)
+
+	if len(args)>1:
+		for arg in args:
+			if arg=='-t':
+				dataSet = np.amax(X/iteraciones, axis=0)
+				labels  = dataSet
+				train(NeuralNetwork=L1, DataSet=dataSet, Labels=labels)
+				L1.setParams(L1.getParams())
+				upd = dbh.query("UPDATE weight SET current=0 WHERE layer='Layer One';")
+				uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer One')",(L1.getParams(),))
+				
+				print dataSet
+				dataSet = L1.forward(dataSet)
+				labels  = L1.forward(labels)
+				print L1.backward(dataSet)
+				sys.exit()
+				train(NeuralNetwork=L2, DataSet=dataSet, Labels=labels)
+				L2.setParams(L2.getParams())
+				upd = dbh.query("UPDATE weight SET current=0 WHERE layer='Layer Two';")
+				uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Two')",(L2.getParams(),))
+				
+				dataSet = L2.forward(dataSet)
+				labels  = L2.forward(labels)
+				train(NeuralNetwork=L3, DataSet=dataSet, Labels=labels)
+				L3.setParams(L3.getParams())
+				upd = dbh.query("UPDATE weight SET current=0 WHERE layer='Layer Three';")
+				uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Three')",(L3.getParams(),))
+				
+				dataSet = L3.forward(dataSet)
+				labels  = y
+				train(NeuralNetwork=L4, DataSet=dataSet, Labels=labels)
+				L4.setParams(L4.getParams())
+				upd = dbh.query("UPDATE weight SET current=0 WHERE layer='Layer Four';")
+				uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Four')",(L4.getParams(),))
+	
+	query = dbh.query("select * from weight where current=?;", (1,))
+	
+	if len(query)>0:
+		for row in query:
+			params = row['weight']
+			if row['layer'] == 'Layer One':
+				L1.setParams(params)
+			if row['layer'] == 'Layer Two':
+				L2.setParams(params)
+			if row['layer'] == 'Layer Three':
+				L3.setParams(params)
+			if row['layer'] == 'Layer Four':
+				L4.setParams(params)
+	else:
+		dataSet = X
+		labels  = X
+		train(NeuralNetwork=L1, DataSet=dataSet, Labels=labels)
+		L1.setParams(L1.getParams())
+		upd = dbh.query("UPDATE weight SET current=0;")
+		uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer One')",(L1.getParams(),))
+		
+		dataSet = L1.forward(dataSet)
+		labels  = L1.forward(labels)
+		train(NeuralNetwork=L2, DataSet=dataSet, Labels=labels)
+		L2.setParams(L2.getParams())
+		upd = dbh.query("UPDATE weight SET current=0;")
+		uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Two')",(L2.getParams(),))
+		
+		dataSet = L2.forward(dataSet)
+		labels  = L2.forward(labels)
+		train(NeuralNetwork=L3, DataSet=dataSet, Labels=labels)
+		L3.setParams(L3.getParams())
+		upd = dbh.query("UPDATE weight SET current=0;")
+		uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Three')",(L3.getParams(),))
+		
+		dataSet = L3.forward(dataSet)
+		labels  = L3.forward(labels)
+		train(NeuralNetwork=L4, DataSet=dataSet, Labels=labels)
+		L4.setParams(L4.getParams())
+		upd = dbh.query("UPDATE weight SET current=0;")
+		uns = dbh.query("INSERT INTO weight(weight, current, layer) VALUES(?,1,'Layer Four')",(L4.getParams(),))
+		
+	dbh = SQLHelper("./loto.sqlite")
+
+	testDataSet = []
+	for i in range(0,41):
+		testDataSet.append(0)
+
+	#strQuery = "SELECT numero, COUNT(numero) as cantidad from numero where sorteo=1764 and lower(juego)='loto' group by numero;"
+	strQuery = "SELECT numero, COUNT(numero) as cantidad from numero where sorteo in (select numero from sorteo where fecha>'"+primeraFecha+"' and LOWER(juego)='loto' limit "+str(iteraciones)+") and lower(juego)='loto' group by numero;"
+	res = dbh.query(strQuery)
+
+	if len(res)>0:
+		for numero in res:
+			testDataSet[numero[0]-1] = numero[1]
+
+		ds = np.array(testDataSet, dtype=float)
+		#ds = ds/np.amax(ds, axis=0)
+		result = forward(ds, list((L1,L2,L3,L4)))
+		i = 1
+		for numero in result:
+			porcentaje = int(numero*100)
+			if porcentaje>66:
+				print i, porcentaje, "%"
+			i += 1
+
+		#strQuery = "SELECT numero from numero where sorteo=1764 and lower(juego)='loto' order by sorteo,numero;"
+		strQuery = "SELECT numero from numero where sorteo=(select numero from sorteo where id=(select max(id) from (select * from sorteo where lower(juego)='loto' order by date(fecha) limit "+str(iteraciones)+"))) and lower(juego)='loto' order by numero;"
+		res = dbh.query(strQuery)
+		print res
+	#print computeNumericalGradient(NN, X, y)
+	return 0
+
+#def readData(Dbh):
+#       X = np.array(([3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],[3,5],[5,2],[10,1],), dtype=float)
+#       y = np.array(([75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],[75],[82],[93],), dtype=float)
+#       #Normalize
+#       X = X/np.amax(X, axis=0)
+#       y = y/100
+#
+#	return X, y
+
+def getTestSet(i):
+	X, labels = load_mnist('training', digits=[i])
+	X = np.array(( np.random.rand(*X.shape) < X), dtype=float)
+	total = len(X)
+	size = (len(X[0])*len(X[0][0]))
+	X = X.reshape(total,size)
+	testSet = np.array(X, dtype=float)
+	del X
+	return testSet
+
+
+def train(NeuralNetwork, DataSet, Labels):
+	T = Trainer(NeuralNetwork)
+	T.train(DataSet,Labels)
+
+def showASCIIImage(data):
+	print data
+	sys.exit()
+	tmp = []
+	for x in xrange(0,28):
+		row = []
+		for y in xrange(0,28):
+			i = x*28+y
+			row.append(data[i])
+		tmp.append(row)
+	#data = np.array(tmp, dtype=np.uint8)
+	data = np.array(tmp, dtype=float)
+	for d in data:
+		row = ""
+		for pixel in d:
+			if pixel:
+				row +="*"
+			else:
+				row+=" "
+		print row
+
+def saveImage(data, fileName='image.png'):
+	try:
+		tmp = []
+		for x in xrange(0,28):
+			row = []
+			for y in xrange(0,28):
+				i = x*28+y
+				row.append((data[i], data[i], data[i]))
+			tmp.append(row)
+		data = np.array(tmp, dtype=np.uint8)
+		print "Grabando imagen...",data.shape
+		#print data*255
+		#img = Image.fromarray(data*255)
+		img = Image.fromarray(data)
+		#img = img.filter(ImageFilter.SMOOTH)
+		img.save(fileName)
+	except Exception, e:
+		print e
+
+def forward(DataSet, Layers ):
+	res = DataSet
+	for Layer in Layers:
+		res = Layer.forward(res)
+	return res
+
+def computeNumericalGradient(N, X, y):
+	paramsInitial = N.getParams()
+	numgrad = np.zeros(paramsInitial.shape)
+	perturb = np.zeros(paramsInitial.shape)
+	e = 1e-4
+
+	for p in range(len(paramsInitial)):
+		perturb[p] = e
+		N.setParams(paramsInitial + perturb)
+		loss2 = N.costFunction(X,y)
+
+		N.setParams(paramsInitial - perturb)
+		loss1 = N.costFunction(X,y)
+		
+		numgrad[p] = (loss2-loss1) / (2*e)
+
+		perturb[p] = 0
+	
+	N.setParams(paramsInitial)	
+
+	return numgrad
+
+if __name__=='__main__':
+	sys.exit(main(sys.argv))
+
